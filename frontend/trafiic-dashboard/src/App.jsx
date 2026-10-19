@@ -1,5 +1,7 @@
+
 import './App.css';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+
 import {
   LineChart,
   Line,
@@ -11,13 +13,96 @@ import {
 } from 'recharts';
 
 function App() {
-
   const [northSignal, setNorthSignal] = useState('GREEN');
   const [southSignal, setSouthSignal] = useState('RED');
   const [eastSignal, setEastSignal] = useState('GREEN');
   const [westSignal, setWestSignal] = useState('RED');
 
   const [emergency, setEmergency] = useState(false);
+
+  // Laptop camera states
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const [cameraLoading, setCameraLoading] = useState(false);
+
+  // Start laptop camera
+  const startCamera = async () => {
+    setCameraError('');
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        'Camera is unavailable. Please open this app using localhost or HTTPS.'
+      );
+      return;
+    }
+
+    setCameraLoading(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false
+      });
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setCameraOn(true);
+      } else {
+        stream.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+    } catch (error) {
+      if (error.name === 'NotAllowedError') {
+        setCameraError(
+          'Camera permission denied. Please allow camera access in your browser.'
+        );
+      } else if (error.name === 'NotFoundError') {
+        setCameraError(
+          'No camera found. Please check your laptop webcam.'
+        );
+      } else if (error.name === 'NotReadableError') {
+        setCameraError(
+          'Camera is busy. Close other apps using the camera and try again.'
+        );
+      } else {
+        setCameraError(
+          error.message || 'Unable to start the camera. Please try again.'
+        );
+      }
+    } finally {
+      setCameraLoading(false);
+    }
+  };
+
+  // Stop laptop camera
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraOn(false);
+    setCameraError('');
+  };
+
+  // Stop camera when component unmounts
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+    };
+  }, []);
 
   const trafficHistory = [
     { time: '10 AM', vehicles: 15, density: 35 },
@@ -34,6 +119,156 @@ function App() {
       <h1>AI-Based Green Smart Traffic Management System</h1>
       <h2>Traffic Management Dashboard</h2>
 
+      {/* LIVE LAPTOP CAMERA */}
+      <div
+        style={{
+          background: '#ffffff',
+          color: '#1f2937',
+          padding: '20px',
+          margin: '20px 0',
+          borderRadius: '12px',
+          border: '1px solid #d1d5db',
+          boxSizing: 'border-box'
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '10px',
+            marginBottom: '15px'
+          }}
+        >
+          <h2 style={{ margin: 0 }}>📹 Live Traffic Camera</h2>
+
+          <span
+            style={{
+              color: cameraOn ? '#15803d' : '#dc2626',
+              fontWeight: 'bold'
+            }}
+          >
+            {cameraOn ? '● CAMERA LIVE' : '● CAMERA OFFLINE'}
+          </span>
+        </div>
+
+        <div
+          style={{
+            width: '100%',
+            maxWidth: '900px',
+            margin: '0 auto',
+            aspectRatio: '16 / 9',
+            background: '#111827',
+            borderRadius: '10px',
+            overflow: 'hidden',
+            position: 'relative'
+          }}
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: cameraOn ? 'block' : 'none'
+            }}
+          />
+
+          {!cameraOn && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                color: '#ffffff',
+                textAlign: 'center',
+                padding: '15px',
+                boxSizing: 'border-box'
+              }}
+            >
+              <div style={{ fontSize: '48px' }}>📷</div>
+              <h3 style={{ margin: '10px 0' }}>
+                Camera is currently off
+              </h3>
+              <p style={{ color: '#d1d5db', margin: 0 }}>
+                Start the camera to view live video
+              </p>
+            </div>
+          )}
+        </div>
+
+        {cameraError && (
+          <p
+            role="alert"
+            style={{
+              color: '#dc2626',
+              background: '#fef2f2',
+              padding: '10px',
+              borderRadius: '6px',
+              marginTop: '12px'
+            }}
+          >
+            ⚠️ {cameraError}
+          </p>
+        )}
+
+        <div
+          style={{
+            display: 'flex',
+            gap: '10px',
+            flexWrap: 'wrap',
+            marginTop: '15px'
+          }}
+        >
+          {!cameraOn ? (
+            <button
+              onClick={startCamera}
+              disabled={cameraLoading}
+              style={{
+                background: '#15803d',
+                color: '#ffffff',
+                border: 'none',
+                padding: '12px 22px',
+                borderRadius: '7px',
+                cursor: cameraLoading ? 'wait' : 'pointer',
+                fontWeight: 'bold',
+                opacity: cameraLoading ? 0.7 : 1
+              }}
+            >
+              {cameraLoading ? 'Starting Camera...' : '▶ Start Camera'}
+            </button>
+          ) : (
+            <button
+              onClick={stopCamera}
+              style={{
+                background: '#dc2626',
+                color: '#ffffff',
+                border: 'none',
+                padding: '12px 22px',
+                borderRadius: '7px',
+                cursor: 'pointer',
+                fontWeight: 'bold'
+              }}
+            >
+              ■ Stop Camera
+            </button>
+          )}
+        </div>
+
+        <p style={{ fontSize: '13px', color: '#64748b' }}>
+          Note: This camera displays live video only. AI vehicle detection
+          is not connected yet.
+        </p>
+      </div>
+
+      {/* DASHBOARD SUMMARY */}
       <div className="summary-container">
 
         <div className="summary-card">
@@ -58,6 +293,7 @@ function App() {
 
       </div>
 
+      {/* EMERGENCY STATUS */}
       <div className={`alert-box ${emergency ? 'emergency-active' : ''}`}>
 
         <h3>🚨 Emergency Status</h3>
@@ -81,6 +317,7 @@ function App() {
 
       </div>
 
+      {/* SYSTEM STATUS */}
       <div className="system-status">
         <h3>⚙️ System Status</h3>
         <p>🟢 AI Detection: Active</p>
@@ -89,6 +326,7 @@ function App() {
         <p>🟢 Database: Connected</p>
       </div>
 
+      {/* ANALYTICS */}
       <div className="analytics-container">
 
         <div className="analytics-card">
@@ -113,19 +351,16 @@ function App() {
 
       </div>
 
+      {/* TRAFFIC ANALYSIS CHART */}
       <div className="chart-section">
 
         <h2>📈 Traffic Analysis</h2>
 
         <ResponsiveContainer width="100%" height={350}>
           <LineChart data={trafficHistory}>
-
             <CartesianGrid strokeDasharray="3 3" />
-
             <XAxis dataKey="time" />
-
             <YAxis />
-
             <Tooltip />
 
             <Line
@@ -143,12 +378,12 @@ function App() {
               strokeWidth={3}
               name="Density %"
             />
-
           </LineChart>
         </ResponsiveContainer>
 
       </div>
 
+      {/* TRAFFIC SIGNALS */}
       <div className="traffic-container">
 
         <div className="traffic-card">
@@ -225,6 +460,7 @@ function App() {
 
       </div>
 
+      {/* TRAFFIC HISTORY */}
       <div className="history-section">
 
         <h2>📊 Traffic History</h2>
@@ -272,6 +508,7 @@ function App() {
 
       </div>
 
+      {/* PERFORMANCE REPORT */}
       <div className="report-section">
 
         <h2>📄 Traffic Performance Report</h2>
@@ -282,14 +519,12 @@ function App() {
         </div>
 
         <div className="report-summary">
-
           <p><strong>Report Period:</strong> Today</p>
           <p><strong>Total Vehicles Managed:</strong> 1,248</p>
           <p><strong>Average Waiting Time:</strong> 38 seconds</p>
           <p><strong>Fuel Saved:</strong> 86.4 Litres</p>
           <p><strong>CO₂ Reduced:</strong> 197.2 kg</p>
           <p><strong>Emergency Events:</strong> 3</p>
-
         </div>
 
       </div>
