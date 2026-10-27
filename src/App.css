@@ -1,0 +1,440 @@
+/* ===== GLOBAL STYLES ===== */
+* {
+  box-sizing: border-box;
+}
+
+.dashboard {
+  min-height: 100vh;
+  padding: 35px;
+  background: #f1f5f9;
+  font-family: Arial, sans-serif;
+  text-align: center;
+  color: #1e293b;
+}
+
+.dashboard h1 {
+  margin: 0 0 12px;
+  font-size: clamp(25px, 3vw, 36px);
+  line-height: 1.3;
+  color: #0f172a;
+}
+
+.dashboard h2 {
+  margin: 0 0 30px;
+  color: #475569;
+  font-size: 23px;
+}
+
+/* ===== SUMMARY CARDS ===== */
+.summary-container {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 30px;
+}
+
+.summary-card {
+  min-width: 0;
+  padding: 24px 18px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.summary-card:hover,
+.analytics-card:hover,
+.traffic-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.1);
+}
+
+.summary-card h3 {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 15px;
+}
+
+.summary-number {
+  margin: 0;
+  color: #2563eb;
+  font-size: 30px;
+  font-weight: bold;
+}
+
+/* ===== TRAFFIC SIGNAL CARDS ===== */
+.traffic-container {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 50px;
+}
+
+.traffic-card {
+  min-width: 0;
+  padding: 26px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 15px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.traffic-card h3 {
+  margin: 0 0 18px;
+  color: #1e293b;
+  font-size: 24px;
+}
+
+.traffic-card p {
+  margin: 12px 0;
+  color: #475569;
+  font-size: 16px;
+}
+
+.traffic-card button {
+  margin: 8px 5px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 7px;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: bold;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.traffic-card button:hover {
+  opacity: 0.8;
+}
+
+/* ===== TRAFFIC SIGNAL LIGHT ===== */
+.signal {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.signal-light {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+.signal-light.green {
+  background: #16a34a;
+  box-shadow: 0 0 10px rgba(22, 163, 74, 0.5);
+}
+
+.signal-light.red {
+  background: #dc2626;
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.4);
+}
+
+/* ===== ANALYTICS CARDS ===== */
+.analytics-container {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 35px;
+}
+
+.analytics-card {
+  min-width: 0;
+  padding: 24px 18px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.analytics-card h3 {
+  margin: 0 0 14px;
+  color: #64748b;
+  font-size: 15px;
+}
+
+.analytics-card p {
+  margin: 0;
+  color: #2563eb;
+  font-size: 23px;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+/* ===== DENSITY BAR ===== */
+.density-bar {
+  width: 100%;
+  height: 10px;
+  margin: 16px 0;
+  overflow: hidden;
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+
+.density-fill {
+  height: 100%;
+  background: #f59e0b;
+  border-radius: 10px;
+}
+
+/* ===== EMERGENCY STATUS ===== */
+.alert-box {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 25px;
+  padding: 25px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+}
+
+.alert-box h3,
+.system-status h3 {
+  margin-top: 0;
+  color: #1e293b;
+}
+
+.alert-box p {
+  color: #475569;
+}
+
+.emergency-active {
+  border: 2px solid #dc2626;
+  background: #fff1f2;
+}
+
+.emergency-button {
+  margin-top: 12px;
+  padding: 11px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #dc2626;
+  color: #ffffff;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.emergency-button:hover {
+  opacity: 0.85;
+}
+
+/* ===== SYSTEM STATUS ===== */
+.system-status {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 35px;
+  padding: 25px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+}
+
+.system-status p {
+  margin: 12px 0;
+  color: #475569;
+}
+
+/* ===== TRAFFIC CHART ===== */
+.chart-section {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 35px;
+  padding: 25px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+  text-align: left;
+}
+
+.chart-section h2 {
+  margin: 0 0 25px;
+  color: #1e293b;
+}
+
+/* ===== TRAFFIC HISTORY ===== */
+.history-section {
+  display: block;
+  clear: both;
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 35px;
+  padding: 25px;
+  overflow-x: auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+  text-align: left;
+}
+
+.history-section h2 {
+  margin: 0 0 22px;
+  color: #1e293b;
+}
+
+.history-section table {
+  width: 100%;
+  min-width: 540px;
+  border-collapse: collapse;
+}
+
+.history-section th,
+.history-section td {
+  padding: 15px 12px;
+  text-align: center;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.history-section th {
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 14px;
+}
+
+.history-section td {
+  color: #475569;
+  font-size: 14px;
+}
+
+.history-section tbody tr:hover {
+  background: #f8fafc;
+}
+
+/* ===== PERFORMANCE REPORT ===== */
+.report-section {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 35px;
+  padding: 25px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.06);
+}
+
+.report-section h2 {
+  margin: 0 0 22px;
+  color: #1e293b;
+}
+
+.report-buttons {
+  margin-bottom: 20px;
+}
+
+.report-buttons button {
+  margin: 5px;
+  padding: 11px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.report-buttons button:hover {
+  opacity: 0.85;
+}
+
+.report-summary {
+  padding: 20px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.report-summary p {
+  margin: 12px 0;
+  color: #475569;
+  line-height: 1.5;
+}
+
+/* ===== TABLET ===== */
+@media (max-width: 900px) {
+  .dashboard {
+    padding: 25px 18px;
+  }
+
+  .summary-container,
+  .analytics-container {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .traffic-container {
+    gap: 18px;
+    margin-bottom: 35px;
+  }
+}
+
+/* ===== MOBILE ===== */
+@media (max-width: 600px) {
+  .dashboard {
+    padding: 20px 12px;
+  }
+
+  .dashboard h1 {
+    font-size: 25px;
+  }
+
+  .dashboard h2 {
+    font-size: 20px;
+  }
+
+  .summary-container,
+  .analytics-container,
+  .traffic-container {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 15px;
+  }
+
+  .summary-card,
+  .analytics-card {
+    padding: 20px 15px;
+  }
+
+  .traffic-card {
+    padding: 22px 15px;
+  }
+
+  .alert-box,
+  .system-status,
+  .chart-section,
+  .history-section,
+  .report-section {
+    padding: 18px 14px;
+  }
+
+  .history-section {
+    margin-bottom: 25px;
+  }
+
+  .history-section th,
+  .history-section td {
+    padding: 11px 8px;
+    font-size: 12px;
+  }
+
+  .analytics-card p {
+    font-size: 21px;
+  }
+}
