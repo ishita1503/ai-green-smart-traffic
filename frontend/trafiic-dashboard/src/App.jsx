@@ -13,6 +13,8 @@ import {
 } from 'recharts';
 
 function App() {
+  const [backendStatus, setBackendStatus] = useState('Checking...');
+  const [apiError, setApiError] = useState('');
   const [northSignal, setNorthSignal] = useState('GREEN');
   const [southSignal, setSouthSignal] = useState('RED');
   const [eastSignal, setEastSignal] = useState('GREEN');
@@ -101,6 +103,56 @@ function App() {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
       }
+    };
+  }, []);
+    // Check backend connection and retrieve current signal status
+  useEffect(() => {
+    const API_URL =
+      import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
+    let isMounted = true;
+
+    const checkBackend = async () => {
+      try {
+        const [healthResponse, signalResponse] = await Promise.all([
+          fetch(`${API_URL}/health`),
+          fetch(`${API_URL}/signal-status`)
+        ]);
+
+        if (!healthResponse.ok || !signalResponse.ok) {
+          throw new Error('Backend API request failed');
+        }
+
+        const health = await healthResponse.json();
+        const signal = await signalResponse.json();
+
+        if (!isMounted) return;
+
+        setBackendStatus(
+          health.status === 'online' ? 'Connected' : 'Unavailable'
+        );
+
+        setApiError('');
+
+        setNorthSignal(signal.North ?? 'RED');
+        setSouthSignal(signal.South ?? 'RED');
+        setEastSignal(signal.East ?? 'RED');
+        setWestSignal(signal.West ?? 'RED');
+      } catch (error) {
+        if (!isMounted) return;
+
+        setBackendStatus('Disconnected');
+        setApiError(error.message);
+      }
+    };
+
+    checkBackend();
+
+    const intervalId = setInterval(checkBackend, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
     };
   }, []);
 
@@ -317,13 +369,24 @@ function App() {
 
       </div>
 
-      {/* SYSTEM STATUS */}
+            {/* SYSTEM STATUS */}
       <div className="system-status">
         <h3>⚙️ System Status</h3>
-        <p>🟢 AI Detection: Active</p>
-        <p>🟢 Backend: Connected</p>
-        <p>🟢 ESP32: Connected</p>
-        <p>🟢 Database: Connected</p>
+
+        <p>
+          Backend: {backendStatus === 'Connected' ? '🟢' : '🔴'}
+          {' '}{backendStatus}
+        </p>
+
+        <p>AI Detection: Not connected</p>
+        <p>ESP32: Not verified</p>
+        <p>Database: Configured in backend</p>
+
+        {apiError && (
+          <p role="alert">
+            API Error: {apiError}
+          </p>
+        )}
       </div>
 
       {/* ANALYTICS */}

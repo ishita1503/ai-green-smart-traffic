@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware 
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, Float, Boolean, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -116,6 +117,20 @@ app = FastAPI(
     title="AI Green Smart Traffic Management System",
     description="Backend API for adaptive traffic signal management",
     version="1.0.0"
+)
+# ============================================================
+# CORS CONFIGURATION — ALLOW FRONTEND CONNECTION
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
