@@ -1,13 +1,23 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware 
-from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, Float, Boolean, String, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
+
+from pathlib import Path
 from datetime import datetime
+from threading import Lock
+
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sqlalchemy import (
+    create_engine, Column, Integer, Float, String, DateTime
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 
 # ============================================================
-# SQLITE DATABASE
+# DATABASE
 # ============================================================
 
 DATABASE_URL = "sqlite:///./traffic.db"
@@ -26,107 +36,38 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
-# ============================================================
-# TRAFFIC DATABASE TABLE
-# ============================================================
+class CameraTrafficRecord(Base):
+    __tablename__ = "camera_traffic_records"
 
-class TrafficRecord(Base):
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.now)
 
-    __tablename__ = "traffic_records"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-        index=True
-    )
-
-    timestamp = Column(
-        DateTime,
-        default=datetime.utcnow
-    )
-
-    # --------------------------------------------------------
-    # Vehicle counts
-    # --------------------------------------------------------
-
-    north_vehicles = Column(Integer)
-    south_vehicles = Column(Integer)
-    east_vehicles = Column(Integer)
-    west_vehicles = Column(Integer)
-
-    # --------------------------------------------------------
-    # Traffic density
-    # --------------------------------------------------------
-
-    north_density = Column(Float)
-    south_density = Column(Float)
-    east_density = Column(Float)
-    west_density = Column(Float)
-
-    # --------------------------------------------------------
-    # Waiting time
-    # --------------------------------------------------------
-
-    north_waiting = Column(Float)
-    south_waiting = Column(Float)
-    east_waiting = Column(Float)
-    west_waiting = Column(Float)
-
-    # --------------------------------------------------------
-    # Emergency vehicle status
-    # --------------------------------------------------------
-
-    north_emergency = Column(
-        Boolean,
-        default=False
-    )
-
-    south_emergency = Column(
-        Boolean,
-        default=False
-    )
-
-    east_emergency = Column(
-        Boolean,
-        default=False
-    )
-
-    west_emergency = Column(
-        Boolean,
-        default=False
-    )
-
-    # --------------------------------------------------------
-    # Signal decision
-    # --------------------------------------------------------
-
-    priority_direction = Column(String)
-
-    green_time = Column(Integer)
+    vehicle_count = Column(Integer, nullable=False)
+    density = Column(Float, nullable=False)
+    signal_status = Column(String, nullable=False)
+    detections = Column(Integer, nullable=False)
 
 
-# Create database table
 Base.metadata.create_all(bind=engine)
 
 
 # ============================================================
-# FASTAPI APPLICATION
+# FASTAPI
 # ============================================================
 
 app = FastAPI(
     title="AI Green Smart Traffic Management System",
-    description="Backend API for adaptive traffic signal management",
-    version="1.0.0"
+    version="2.0.0"
 )
-# ============================================================
-# CORS CONFIGURATION — ALLOW FRONTEND CONNECTION
-# ============================================================
 
+# CORS: allow Vite frontend on ports 5173 and 5174.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "http://127.0.0.1:5173"
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -135,719 +76,366 @@ app.add_middleware(
 
 
 # ============================================================
-# LATEST SIGNAL STATUS
+# YOLO MODEL
 # ============================================================
 
-latest_signal = {
+MODEL_PATH = Path(__file__).resolve().parent.parent / "yolov8n.pt"
 
-    "North": "RED",
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(f"YOLO model not found: {MODEL_PATH}")
 
-    "South": "RED",
+model = YOLO(str(MODEL_PATH))
+model_lock = Lock()
 
-    "East": "RED",
+VEHICLE_CLASSES = {
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck"
+}
 
-    "West": "RED",
+# Project assumption: 20 vehicles = 100% density.
+ROAD_CAPACITY = 20
 
-    "active_direction": "None",
-
-    "green_time": 0
+latest_camera_data = {
+    "vehicle_count": 0,
+    "density": 0,
+    "signal_status": "RED",
+    "timestamp": None
 }
 
 
 # ============================================================
-# TRAFFIC DATA MODEL
+# HOME AND HEALTH
 # ============================================================
 
-class TrafficData(BaseModel):
+@app.get("/")
+def home():
+    return {
+        "message": "AI Green Smart Traffic Backend is running"
+    }
 
-    # Vehicle counts
+
+@app.get("/health")
+def health():
+    return {"status": "online"}
+
+
+# ============================================================
+# YOLO VEHICLE DETECTION
+# ============================================================
+
+@app.post("/detect")
+async def detect_vehicles(file: UploadFile = File(...)):
+
+    image_bytes = await file.read()
+
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Empty image")
+
+    image_array = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Invalid image")
+
+    try:
+        with model_lock:
+            results = model.predict(
+                source=frame,
+                conf=0.25,
+                iou=0.45,
+                imgsz=640,
+                verbose=False
+            )
+
+        detections = []
+
+        for result in results:
+            if result.boxes is None:
+                continue
+
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+
+                if class_id not in VEHICLE_CLASSES:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+
+                detections.append({
+                    "vehicle": VEHICLE_CLASSES[class_id],
+                    "confidence": round(float(box.conf[0]), 2),
+                    "box": [
+                        round(float(x1), 2),
+                        round(float(y1), 2),
+                        round(float(x2), 2),
+                        round(float(y2), 2)
+                    ]
+                })
+
+        return {
+            "vehicle_count": len(detections),
+            "detections": detections,
+            "frame_width": int(frame.shape[1]),
+            "frame_height": int(frame.shape[0])
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"YOLO detection failed: {str(error)}"
+        )
+
+
+# ============================================================
+# SINGLE CAMERA TRAFFIC UPDATE
+# ============================================================
+
+class CameraTrafficData(BaseModel):
+    vehicle_count: int = Field(ge=0)
+    density: float = Field(ge=0, le=100)
+    detections: int = Field(ge=0)
+
+
+@app.post("/camera-traffic")
+def save_camera_traffic(data: CameraTrafficData):
+
+    signal_status = "GREEN" if data.density >= 40 else "RED"
+
+    latest_camera_data.update({
+        "vehicle_count": data.vehicle_count,
+        "density": data.density,
+        "signal_status": signal_status,
+        "timestamp": datetime.now().isoformat()
+    })
+
+    db = SessionLocal()
+
+    try:
+        record = CameraTrafficRecord(
+            vehicle_count=data.vehicle_count,
+            density=data.density,
+            signal_status=signal_status,
+            detections=data.detections
+        )
+
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        return {
+            "message": "Camera traffic data saved",
+            "record_id": record.id,
+            "vehicle_count": data.vehicle_count,
+            "density": data.density,
+            "signal_status": signal_status
+        }
+
+    finally:
+        db.close()
+
+
+# ============================================================
+# CAMERA SIGNAL STATUS
+# ============================================================
+
+@app.get("/camera-signal")
+def camera_signal():
+    return latest_camera_data
+
+
+# ============================================================
+# CAMERA TRAFFIC HISTORY
+# ============================================================
+
+@app.get("/camera-history")
+def camera_history():
+
+    db = SessionLocal()
+
+    try:
+        records = (
+            db.query(CameraTrafficRecord)
+            .order_by(CameraTrafficRecord.id.desc())
+            .limit(100)
+            .all()
+        )
+
+        return {
+            "total_records": db.query(CameraTrafficRecord).count(),
+            "records": [
+                {
+                    "id": record.id,
+                    "timestamp": record.timestamp.isoformat(),
+                    "vehicle_count": record.vehicle_count,
+                    "density": record.density,
+                    "signal_status": record.signal_status,
+                    "detections": record.detections
+                }
+                for record in records
+            ]
+        }
+
+    finally:
+        db.close()
+
+
+# ============================================================
+# CAMERA ANALYTICS
+# ============================================================
+
+@app.get("/camera-analytics")
+def camera_analytics():
+
+    db = SessionLocal()
+
+    try:
+        records = db.query(CameraTrafficRecord).all()
+
+        if not records:
+            return {
+                "total_records": 0,
+                "total_vehicles_processed": 0,
+                "average_density": 0,
+                "average_waiting_time_seconds": 0,
+                "estimated_fuel_saved_litres": 0,
+                "estimated_co2_reduction_kg": 0
+            }
+
+        total_vehicles = sum(r.vehicle_count for r in records)
+        average_density = sum(r.density for r in records) / len(records)
+
+        # Estimates based on project assumptions.
+        estimated_waiting = round(average_density * 0.6, 2)
+        estimated_fuel = round(total_vehicles * 0.002, 2)
+        estimated_co2 = round(estimated_fuel * 2.31, 2)
+
+        return {
+            "total_records": len(records),
+            "total_vehicles_processed": total_vehicles,
+            "average_density": round(average_density, 2),
+            "average_waiting_time_seconds": estimated_waiting,
+            "estimated_fuel_saved_litres": estimated_fuel,
+            "estimated_co2_reduction_kg": estimated_co2,
+            "note": "Fuel, CO2 and waiting values are project estimates."
+        }
+
+    finally:
+        db.close()
+
+
+# ============================================================
+# LEGACY FOUR-DIRECTION API
+# ============================================================
+
+latest_signal = {
+    "North": "RED",
+    "South": "RED",
+    "East": "RED",
+    "West": "RED",
+    "active_direction": "None",
+    "green_time": 0
+}
+
+
+class TrafficData(BaseModel):
     north_vehicles: int
     south_vehicles: int
     east_vehicles: int
     west_vehicles: int
 
-    # Traffic density
     north_density: float
     south_density: float
     east_density: float
     west_density: float
 
-    # Waiting time
     north_waiting: float
     south_waiting: float
     east_waiting: float
     west_waiting: float
 
-    # Emergency vehicles
     north_emergency: bool = False
     south_emergency: bool = False
     east_emergency: bool = False
     west_emergency: bool = False
 
 
-# ============================================================
-# HOME API
-# ============================================================
+def calculate_green_time(density: float, waiting_time: float):
+    score = density * 0.7 + waiting_time * 0.3
+    return max(15, min(round(15 + (score / 100) * 45), 60))
 
-@app.get("/")
-def home():
-
-    return {
-        "message":
-        "AI Green Smart Traffic Backend is running"
-    }
-
-
-# ============================================================
-# HEALTH API
-# ============================================================
-
-@app.get("/health")
-def health():
-
-    return {
-        "status": "online"
-    }
-
-
-# ============================================================
-# GREEN TIME CALCULATION
-# ============================================================
-
-def calculate_green_time(
-    density: float,
-    waiting_time: float
-):
-
-    MIN_GREEN = 15
-    MAX_GREEN = 60
-
-    # Priority score
-    priority_score = (
-        density * 0.7
-        + waiting_time * 0.3
-    )
-
-    # Convert priority score to green time
-    green_time = MIN_GREEN + (
-        priority_score / 100
-    ) * (
-        MAX_GREEN - MIN_GREEN
-    )
-
-    green_time = round(
-        green_time
-    )
-
-    # Keep green time between 15 and 60 seconds
-    return max(
-        MIN_GREEN,
-        min(
-            green_time,
-            MAX_GREEN
-        )
-    )
-
-
-# ============================================================
-# TRAFFIC API
-# ============================================================
 
 @app.post("/traffic")
-def receive_traffic(
-    data: TrafficData
-):
-
-    # Open database connection
-    db = SessionLocal()
-
-    # --------------------------------------------------------
-    # Calculate Green Times
-    # --------------------------------------------------------
+def receive_traffic(data: TrafficData):
 
     green_times = {
-
-        "North":
-        calculate_green_time(
-            data.north_density,
-            data.north_waiting
-        ),
-
-        "South":
-        calculate_green_time(
-            data.south_density,
-            data.south_waiting
-        ),
-
-        "East":
-        calculate_green_time(
-            data.east_density,
-            data.east_waiting
-        ),
-
-        "West":
-        calculate_green_time(
-            data.west_density,
-            data.west_waiting
-        )
+        "North": calculate_green_time(data.north_density, data.north_waiting),
+        "South": calculate_green_time(data.south_density, data.south_waiting),
+        "East": calculate_green_time(data.east_density, data.east_waiting),
+        "West": calculate_green_time(data.west_density, data.west_waiting)
     }
 
-    # --------------------------------------------------------
-    # Calculate Priority Scores
-    # --------------------------------------------------------
-
-    priority_scores = {
-
-        "North":
-        (
-            data.north_density * 0.7
-            + data.north_waiting * 0.3
-        ),
-
-        "South":
-        (
-            data.south_density * 0.7
-            + data.south_waiting * 0.3
-        ),
-
-        "East":
-        (
-            data.east_density * 0.7
-            + data.east_waiting * 0.3
-        ),
-
-        "West":
-        (
-            data.west_density * 0.7
-            + data.west_waiting * 0.3
-        )
+    scores = {
+        "North": data.north_density * 0.7 + data.north_waiting * 0.3,
+        "South": data.south_density * 0.7 + data.south_waiting * 0.3,
+        "East": data.east_density * 0.7 + data.east_waiting * 0.3,
+        "West": data.west_density * 0.7 + data.west_waiting * 0.3
     }
 
-    # --------------------------------------------------------
-    # Emergency Vehicle Priority
-    # --------------------------------------------------------
-
-    emergency_directions = {
-
-        "North":
-        data.north_emergency,
-
-        "South":
-        data.south_emergency,
-
-        "East":
-        data.east_emergency,
-
-        "West":
-        data.west_emergency
+    emergency = {
+        "North": data.north_emergency,
+        "South": data.south_emergency,
+        "East": data.east_emergency,
+        "West": data.west_emergency
     }
 
     emergency_direction = next(
-
-        (
-            direction
-
-            for direction, emergency
-            in emergency_directions.items()
-
-            if emergency
-        ),
-
+        (direction for direction, active in emergency.items() if active),
         None
     )
 
-    # --------------------------------------------------------
-    # Select Priority Direction
-    # --------------------------------------------------------
+    priority = emergency_direction or max(scores, key=scores.get)
 
-    if emergency_direction:
+    for direction in ["North", "South", "East", "West"]:
+        latest_signal[direction] = "RED"
 
-        # Emergency vehicle gets priority
-        priority_direction = (
-            emergency_direction
-        )
-
-    else:
-
-        # Highest priority gets GREEN
-        priority_direction = max(
-            priority_scores,
-            key=priority_scores.get
-        )
-
-    # --------------------------------------------------------
-    # Update Signal Status
-    # --------------------------------------------------------
-
-    latest_signal["North"] = "RED"
-
-    latest_signal["South"] = "RED"
-
-    latest_signal["East"] = "RED"
-
-    latest_signal["West"] = "RED"
-
-    latest_signal[
-        priority_direction
-    ] = "GREEN"
-
-    latest_signal[
-        "active_direction"
-    ] = priority_direction
-
-    latest_signal[
-        "green_time"
-    ] = green_times[
-        priority_direction
-    ]
-
-    # --------------------------------------------------------
-    # SAVE TRAFFIC RECORD
-    # --------------------------------------------------------
-
-    record = TrafficRecord(
-
-        # Vehicle counts
-        north_vehicles=data.north_vehicles,
-
-        south_vehicles=data.south_vehicles,
-
-        east_vehicles=data.east_vehicles,
-
-        west_vehicles=data.west_vehicles,
-
-        # Density
-        north_density=data.north_density,
-
-        south_density=data.south_density,
-
-        east_density=data.east_density,
-
-        west_density=data.west_density,
-
-        # Waiting time
-        north_waiting=data.north_waiting,
-
-        south_waiting=data.south_waiting,
-
-        east_waiting=data.east_waiting,
-
-        west_waiting=data.west_waiting,
-
-        # Emergency status
-        north_emergency=data.north_emergency,
-
-        south_emergency=data.south_emergency,
-
-        east_emergency=data.east_emergency,
-
-        west_emergency=data.west_emergency,
-
-        # Decision
-        priority_direction=priority_direction,
-
-        green_time=green_times[
-            priority_direction
-        ]
-    )
-
-    db.add(record)
-
-    db.commit()
-
-    db.refresh(record)
-
-    db.close()
-
-    # --------------------------------------------------------
-    # RETURN RESULT
-    # --------------------------------------------------------
+    latest_signal[priority] = "GREEN"
+    latest_signal["active_direction"] = priority
+    latest_signal["green_time"] = green_times[priority]
 
     return {
-
-        "message":
-        "Adaptive traffic decision calculated successfully",
-
-        "traffic_data":
-        data,
-
-        "priority_scores":
-        priority_scores,
-
-        "green_times":
-        green_times,
-
-        "priority_direction":
-        priority_direction,
-
-        "database_record_id":
-        record.id
+        "priority_direction": priority,
+        "priority_scores": scores,
+        "green_times": green_times
     }
 
 
-# ============================================================
-# SIGNAL STATUS API
-# ============================================================
-
 @app.get("/signal-status")
 def signal_status():
-
     return latest_signal
 
 
-# ============================================================
-# MANUAL SIGNAL OVERRIDE
-# ============================================================
-
 class ManualOverride(BaseModel):
-
     direction: str
 
 
 @app.post("/manual-override")
-def manual_override(
-    data: ManualOverride
-):
+def manual_override(data: ManualOverride):
 
-    direction = (
-        data.direction.capitalize()
-    )
+    direction = data.direction.capitalize()
 
-    # --------------------------------------------------------
-    # Validate Direction
-    # --------------------------------------------------------
+    if direction not in ["North", "South", "East", "West"]:
+        raise HTTPException(status_code=400, detail="Invalid direction")
 
-    if direction not in [
+    for item in ["North", "South", "East", "West"]:
+        latest_signal[item] = "RED"
 
-        "North",
-        "South",
-        "East",
-        "West"
-
-    ]:
-
-        return {
-
-            "error":
-            "Invalid direction. Use North, South, East, or West."
-        }
-
-    # --------------------------------------------------------
-    # Set All Directions RED
-    # --------------------------------------------------------
-
-    latest_signal["North"] = "RED"
-
-    latest_signal["South"] = "RED"
-
-    latest_signal["East"] = "RED"
-
-    latest_signal["West"] = "RED"
-
-    # --------------------------------------------------------
-    # Set Selected Direction GREEN
-    # --------------------------------------------------------
-
-    latest_signal[
-        direction
-    ] = "GREEN"
-
-    latest_signal[
-        "active_direction"
-    ] = direction
-
-    latest_signal[
-        "green_time"
-    ] = 30
-
-    # --------------------------------------------------------
-    # Return Result
-    # --------------------------------------------------------
+    latest_signal[direction] = "GREEN"
+    latest_signal["active_direction"] = direction
+    latest_signal["green_time"] = 30
 
     return {
-
-        "message":
-        "Manual signal override activated",
-
-        "active_direction":
-        direction,
-
-        "signal_status":
-        latest_signal
-    }
-
-
-# ============================================================
-# TRAFFIC HISTORY API
-# ============================================================
-
-@app.get("/traffic-history")
-def traffic_history():
-
-    db = SessionLocal()
-
-    # --------------------------------------------------------
-    # Get all records
-    # --------------------------------------------------------
-
-    records = (
-        db.query(TrafficRecord)
-        .order_by(
-            TrafficRecord.id.desc()
-        )
-        .all()
-    )
-
-    result = []
-
-    # --------------------------------------------------------
-    # Convert database records to JSON
-    # --------------------------------------------------------
-
-    for record in records:
-
-        result.append({
-
-            "id":
-            record.id,
-
-            "timestamp":
-            record.timestamp,
-
-            # Vehicle counts
-            "north_vehicles":
-            record.north_vehicles,
-
-            "south_vehicles":
-            record.south_vehicles,
-
-            "east_vehicles":
-            record.east_vehicles,
-
-            "west_vehicles":
-            record.west_vehicles,
-
-            # Density
-            "north_density":
-            record.north_density,
-
-            "south_density":
-            record.south_density,
-
-            "east_density":
-            record.east_density,
-
-            "west_density":
-            record.west_density,
-
-            # Waiting time
-            "north_waiting":
-            record.north_waiting,
-
-            "south_waiting":
-            record.south_waiting,
-
-            "east_waiting":
-            record.east_waiting,
-
-            "west_waiting":
-            record.west_waiting,
-
-            # Emergency
-            "north_emergency":
-            record.north_emergency,
-
-            "south_emergency":
-            record.south_emergency,
-
-            "east_emergency":
-            record.east_emergency,
-
-            "west_emergency":
-            record.west_emergency,
-
-            # Signal decision
-            "priority_direction":
-            record.priority_direction,
-
-            "green_time":
-            record.green_time
-        })
-
-    db.close()
-
-    return {
-
-        "total_records":
-        len(result),
-
-        "records":
-        result
-    }
-
-
-# ============================================================
-# ANALYTICS API
-# ============================================================
-
-@app.get("/analytics")
-def analytics():
-
-    db = SessionLocal()
-
-    # --------------------------------------------------------
-    # Get all traffic records
-    # --------------------------------------------------------
-
-    records = (
-        db.query(TrafficRecord)
-        .all()
-    )
-
-    # --------------------------------------------------------
-    # No records available
-    # --------------------------------------------------------
-
-    if not records:
-
-        db.close()
-
-        return {
-
-            "message":
-            "No traffic data available for analytics"
-        }
-
-    # --------------------------------------------------------
-    # Initialize calculations
-    # --------------------------------------------------------
-
-    total_vehicles = 0
-
-    total_waiting_time = 0
-
-    total_vehicle_waiting = 0
-
-    # --------------------------------------------------------
-    # Process each traffic record
-    # --------------------------------------------------------
-
-    for record in records:
-
-        # Total vehicles in this record
-        vehicles = (
-
-            (record.north_vehicles or 0)
-
-            + (record.south_vehicles or 0)
-
-            + (record.east_vehicles or 0)
-
-            + (record.west_vehicles or 0)
-        )
-
-        total_vehicles += vehicles
-
-        # Average waiting time for four directions
-        average_waiting = (
-
-            (record.north_waiting or 0)
-
-            + (record.south_waiting or 0)
-
-            + (record.east_waiting or 0)
-
-            + (record.west_waiting or 0)
-
-        ) / 4
-
-        total_waiting_time += (
-            average_waiting
-        )
-
-        # Vehicle waiting measure
-        total_vehicle_waiting += (
-
-            vehicles
-            * average_waiting
-        )
-
-    # --------------------------------------------------------
-    # Average waiting time
-    # --------------------------------------------------------
-
-    average_waiting_time = (
-
-        total_waiting_time
-        / len(records)
-    )
-
-    # --------------------------------------------------------
-    # Estimated fuel saving
-    # --------------------------------------------------------
-    #
-    # Project assumption:
-    #
-    # 0.002 litres of fuel saved
-    # per vehicle for every minute
-    # of waiting-time reduction.
-    #
-    # This is an academic/project estimate.
-    # --------------------------------------------------------
-
-    estimated_fuel_saved = (
-
-        total_vehicle_waiting
-        * 0.002
-    )
-
-    # --------------------------------------------------------
-    # Estimated CO2 reduction
-    # --------------------------------------------------------
-    #
-    # Approximate emission factor:
-    #
-    # 2.31 kg CO2 per litre of petrol.
-    # --------------------------------------------------------
-
-    estimated_co2_reduction = (
-
-        estimated_fuel_saved
-        * 2.31
-    )
-
-    db.close()
-
-    # --------------------------------------------------------
-    # Return analytics
-    # --------------------------------------------------------
-
-    return {
-
-        "total_records":
-        len(records),
-
-        "total_vehicles_processed":
-        total_vehicles,
-
-        "average_waiting_time_minutes":
-        round(
-            average_waiting_time,
-            2
-        ),
-
-        "estimated_fuel_saved_litres":
-        round(
-            estimated_fuel_saved,
-            2
-        ),
-
-        "estimated_co2_reduction_kg":
-        round(
-            estimated_co2_reduction,
-            2
-        ),
-
-        "note":
-        "Fuel and CO2 values are estimated using project assumptions, not direct sensor measurements."
+        "message": "Manual signal override activated",
+        "signal_status": latest_signal
     }

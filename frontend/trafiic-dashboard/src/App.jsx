@@ -1,6 +1,6 @@
 
 import './App.css';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 
 import {
   LineChart,
@@ -13,30 +13,147 @@ import {
 } from 'recharts';
 
 function App() {
+  const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const detectionTimerRef = useRef(null);
+  const lastSaveRef = useRef(0);
+
   const [backendStatus, setBackendStatus] = useState('Checking...');
   const [apiError, setApiError] = useState('');
-  const [northSignal, setNorthSignal] = useState('GREEN');
-  const [southSignal, setSouthSignal] = useState('RED');
-  const [eastSignal, setEastSignal] = useState('GREEN');
-  const [westSignal, setWestSignal] = useState('RED');
 
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraLoading, setCameraLoading] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+
+  const [vehicleCount, setVehicleCount] = useState(0);
+  const [detections, setDetections] = useState([]);
+  const [detectionStatus, setDetectionStatus] = useState('Waiting for camera');
+  const [detectionError, setDetectionError] = useState('');
+
+  const [density, setDensity] = useState(0);
+  const [signalStatus, setSignalStatus] = useState('RED');
+  const [history, setHistory] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
   const [emergency, setEmergency] = useState(false);
 
-  // Laptop camera states
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const [cameraOn, setCameraOn] = useState(false);
-  const [cameraError, setCameraError] = useState('');
-  const [cameraLoading, setCameraLoading] = useState(false);
+  const [trafficHistory, setTrafficHistory] = useState([]);
 
-  // Start laptop camera
+  const densityFromCount = (count) =>
+    Math.min(100, Math.round((count / 20) * 100));
+
+  // Draw bounding boxes over the live video.
+  const drawBoxes = useCallback((items) => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (!video || !canvas || !video.videoWidth || !video.videoHeight) {
+      return;
+    }
+
+    const rect = video.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+
+    canvas.width = Math.round(width * window.devicePixelRatio);
+    canvas.height = Math.round(height * window.devicePixelRatio);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    ctx.clearRect(0, 0, width, height);
+
+    const scaleX = width / video.videoWidth;
+    const scaleY = height / video.videoHeight;
+
+    items.forEach((item) => {
+      if (!item.box || item.box.length !== 4) return;
+
+      const [x1, y1, x2, y2] = item.box;
+      const left = x1 * scaleX;
+      const top = y1 * scaleY;
+      const boxWidth = (x2 - x1) * scaleX;
+      const boxHeight = (y2 - y1) * scaleY;
+
+      const label = `${item.vehicle} ${Math.round(item.confidence * 100)}%`;
+
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#22c55e';
+      ctx.strokeRect(left, top, boxWidth, boxHeight);
+
+      ctx.font = 'bold 14px Arial';
+      const labelWidth = ctx.measureText(label).width + 12;
+      const labelTop = Math.max(0, top - 25);
+
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(left, labelTop, labelWidth, 24);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, left + 6, labelTop + 17);
+    });
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/camera-history`);
+      if (!response.ok) throw new Error('History request failed');
+
+      const result = await response.json();
+      const records = (result.records || []).reverse();
+
+      setHistory(result.records || []);
+
+      setTrafficHistory(
+        records.map((record) => ({
+          time: new Date(record.timestamp).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+          }),
+          vehicles: record.vehicle_count,
+          density: record.density
+        }))
+      );
+    } catch (error) {
+      console.error('History:', error);
+    }
+  }, [API_URL]);
+
+  const loadAnalytics = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/camera-analytics`);
+      if (!response.ok) throw new Error('Analytics request failed');
+
+      setAnalytics(await response.json());
+    } catch (error) {
+      console.error('Analytics:', error);
+    }
+  }, [API_URL]);
+
+  const loadCameraSignal = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/camera-signal`);
+      if (!response.ok) return;
+
+      const result = await response.json();
+      setSignalStatus(result.signal_status || 'RED');
+    } catch (error) {
+      console.error('Signal:', error);
+    }
+  }, [API_URL]);
+
+  // Start webcam.
   const startCamera = async () => {
     setCameraError('');
+    setDetectionError('');
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError(
-        'Camera is unavailable. Please open this app using localhost or HTTPS.'
-      );
+      setCameraError('Camera requires localhost or HTTPS.');
       return;
     }
 
@@ -44,7 +161,10 @@ function App() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
         audio: false
       });
 
@@ -54,116 +174,238 @@ function App() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setCameraOn(true);
-      } else {
-        stream.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
+        setDetectionStatus('Camera connected. Starting YOLO...');
       }
     } catch (error) {
       if (error.name === 'NotAllowedError') {
-        setCameraError(
-          'Camera permission denied. Please allow camera access in your browser.'
-        );
+        setCameraError('Camera permission denied. Allow camera access.');
       } else if (error.name === 'NotFoundError') {
-        setCameraError(
-          'No camera found. Please check your laptop webcam.'
-        );
+        setCameraError('No webcam found.');
       } else if (error.name === 'NotReadableError') {
-        setCameraError(
-          'Camera is busy. Close other apps using the camera and try again.'
-        );
+        setCameraError('Camera is busy. Close other camera apps.');
       } else {
-        setCameraError(
-          error.message || 'Unable to start the camera. Please try again.'
-        );
+        setCameraError(error.message || 'Unable to start camera.');
       }
     } finally {
       setCameraLoading(false);
     }
   };
 
-  // Stop laptop camera
+  // Stop webcam and clear overlay.
   const stopCamera = () => {
+    if (detectionTimerRef.current) {
+      clearInterval(detectionTimerRef.current);
+      detectionTimerRef.current = null;
+    }
+
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+
+    const ctx = canvasRef.current?.getContext('2d');
+    if (ctx && canvasRef.current) {
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
 
     setCameraOn(false);
-    setCameraError('');
+    setVehicleCount(0);
+    setDetections([]);
+    setDensity(0);
+    setSignalStatus('RED');
+    setDetectionStatus('Waiting for camera');
+    setDetectionError('');
   };
 
-  // Stop camera when component unmounts
+  // Stop camera on page close.
   useEffect(() => {
     return () => {
+      if (detectionTimerRef.current) {
+        clearInterval(detectionTimerRef.current);
+      }
+
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
+        streamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
   }, []);
-    // Check backend connection and retrieve current signal status
-  useEffect(() => {
-    const API_URL =
-      import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
-    let isMounted = true;
+  // Backend health.
+  useEffect(() => {
+    let active = true;
 
     const checkBackend = async () => {
       try {
-        const [healthResponse, signalResponse] = await Promise.all([
-          fetch(`${API_URL}/health`),
-          fetch(`${API_URL}/signal-status`)
-        ]);
+        const response = await fetch(`${API_URL}/health`);
+        if (!response.ok) throw new Error('Backend request failed');
 
-        if (!healthResponse.ok || !signalResponse.ok) {
-          throw new Error('Backend API request failed');
+        const result = await response.json();
+
+        if (active) {
+          setBackendStatus(result.status === 'online' ? 'Connected' : 'Unavailable');
+          setApiError('');
         }
-
-        const health = await healthResponse.json();
-        const signal = await signalResponse.json();
-
-        if (!isMounted) return;
-
-        setBackendStatus(
-          health.status === 'online' ? 'Connected' : 'Unavailable'
-        );
-
-        setApiError('');
-
-        setNorthSignal(signal.North ?? 'RED');
-        setSouthSignal(signal.South ?? 'RED');
-        setEastSignal(signal.East ?? 'RED');
-        setWestSignal(signal.West ?? 'RED');
       } catch (error) {
-        if (!isMounted) return;
-
-        setBackendStatus('Disconnected');
-        setApiError(error.message);
+        if (active) {
+          setBackendStatus('Disconnected');
+          setApiError(error.message);
+        }
       }
     };
 
     checkBackend();
-
-    const intervalId = setInterval(checkBackend, 3000);
+    const timer = setInterval(checkBackend, 4000);
 
     return () => {
-      isMounted = false;
-      clearInterval(intervalId);
+      active = false;
+      clearInterval(timer);
     };
-  }, []);
+  }, [API_URL]);
 
-  const trafficHistory = [
-    { time: '10 AM', vehicles: 15, density: 35 },
-    { time: '12 PM', vehicles: 22, density: 52 },
-    { time: '2 PM', vehicles: 18, density: 44 },
-    { time: '4 PM', vehicles: 25, density: 60 },
-    { time: '6 PM', vehicles: 31, density: 78 },
-    { time: '8 PM', vehicles: 24, density: 55 }
-  ];
+  // Initial history and analytics.
+  useEffect(() => {
+    loadHistory();
+    loadAnalytics();
+    loadCameraSignal();
+
+    const timer = setInterval(() => {
+      loadHistory();
+      loadAnalytics();
+      loadCameraSignal();
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [loadHistory, loadAnalytics, loadCameraSignal]);
+
+  // Send camera frames to YOLO.
+  useEffect(() => {
+    if (!cameraOn) return;
+
+    let stopped = false;
+    let busy = false;
+
+    const detectVehicles = async () => {
+      const video = videoRef.current;
+
+      if (!video || video.readyState < 2 || busy || stopped) return;
+
+      busy = true;
+
+      try {
+        const frameCanvas = document.createElement('canvas');
+        frameCanvas.width = video.videoWidth;
+        frameCanvas.height = video.videoHeight;
+
+        const frameContext = frameCanvas.getContext('2d');
+
+        if (!frameContext || !frameCanvas.width || !frameCanvas.height) {
+          return;
+        }
+
+        frameContext.drawImage(
+          video,
+          0,
+          0,
+          frameCanvas.width,
+          frameCanvas.height
+        );
+
+        const blob = await new Promise((resolve) => {
+          frameCanvas.toBlob(resolve, 'image/jpeg', 0.8);
+        });
+
+        if (!blob || stopped) return;
+
+        const formData = new FormData();
+        formData.append('file', blob, 'camera.jpg');
+
+        const response = await fetch(`${API_URL}/detect`, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          throw new Error(`Detection API error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (stopped) return;
+
+        const items = result.detections || [];
+        const count = result.vehicle_count ?? items.length;
+        const currentDensity = densityFromCount(count);
+
+        setVehicleCount(count);
+        setDetections(items);
+        setDensity(currentDensity);
+        setDetectionStatus('YOLO Detection Active');
+        setDetectionError('');
+
+        drawBoxes(items);
+
+        // Save a database reading every 5 seconds.
+        const now = Date.now();
+
+        if (now - lastSaveRef.current >= 5000) {
+          lastSaveRef.current = now;
+
+          const saveResponse = await fetch(`${API_URL}/camera-traffic`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              vehicle_count: count,
+              density: currentDensity,
+              detections: items.length
+            })
+          });
+
+          if (!saveResponse.ok) {
+            throw new Error('Could not save traffic reading.');
+          }
+
+          const saved = await saveResponse.json();
+          setSignalStatus(saved.signal_status || 'RED');
+
+          loadHistory();
+          loadAnalytics();
+        }
+      } catch (error) {
+        if (!stopped) {
+          setDetectionStatus('Detection Error');
+          setDetectionError(error.message);
+        }
+      } finally {
+        busy = false;
+      }
+    };
+
+    detectVehicles();
+
+    detectionTimerRef.current = setInterval(detectVehicles, 2000);
+
+    return () => {
+      stopped = true;
+
+      if (detectionTimerRef.current) {
+        clearInterval(detectionTimerRef.current);
+        detectionTimerRef.current = null;
+      }
+    };
+  }, [cameraOn, API_URL, drawBoxes, loadHistory, loadAnalytics]);
+
+  const totalVehicles = analytics?.total_vehicles_processed ?? 0;
+  const averageDensity = analytics?.average_density ?? 0;
+  const activeSignals = cameraOn && signalStatus === 'GREEN' ? 1 : 0;
+
+  const formatTime = (value) => {
+    if (!value) return '-';
+    return new Date(value).toLocaleTimeString();
+  };
 
   return (
     <div className="dashboard">
@@ -171,7 +413,7 @@ function App() {
       <h1>AI-Based Green Smart Traffic Management System</h1>
       <h2>Traffic Management Dashboard</h2>
 
-      {/* LIVE LAPTOP CAMERA */}
+      {/* LIVE CAMERA */}
       <div
         style={{
           background: '#ffffff',
@@ -195,12 +437,10 @@ function App() {
         >
           <h2 style={{ margin: 0 }}>📹 Live Traffic Camera</h2>
 
-          <span
-            style={{
-              color: cameraOn ? '#15803d' : '#dc2626',
-              fontWeight: 'bold'
-            }}
-          >
+          <span style={{
+            color: cameraOn ? '#15803d' : '#dc2626',
+            fontWeight: 'bold'
+          }}>
             {cameraOn ? '● CAMERA LIVE' : '● CAMERA OFFLINE'}
           </span>
         </div>
@@ -225,8 +465,17 @@ function App() {
             style={{
               width: '100%',
               height: '100%',
-              objectFit: 'cover',
+              objectFit: 'fill',
               display: cameraOn ? 'block' : 'none'
+            }}
+          />
+
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none'
             }}
           />
 
@@ -246,52 +495,38 @@ function App() {
               }}
             >
               <div style={{ fontSize: '48px' }}>📷</div>
-              <h3 style={{ margin: '10px 0' }}>
-                Camera is currently off
-              </h3>
-              <p style={{ color: '#d1d5db', margin: 0 }}>
-                Start the camera to view live video
+              <h3>Camera is currently off</h3>
+              <p style={{ color: '#d1d5db' }}>
+                Start the camera to view live vehicle detection
               </p>
             </div>
           )}
         </div>
 
         {cameraError && (
-          <p
-            role="alert"
-            style={{
-              color: '#dc2626',
-              background: '#fef2f2',
-              padding: '10px',
-              borderRadius: '6px',
-              marginTop: '12px'
-            }}
-          >
+          <p style={{
+            color: '#dc2626',
+            background: '#fef2f2',
+            padding: '10px',
+            borderRadius: '6px'
+          }}>
             ⚠️ {cameraError}
           </p>
         )}
 
-        <div
-          style={{
-            display: 'flex',
-            gap: '10px',
-            flexWrap: 'wrap',
-            marginTop: '15px'
-          }}
-        >
+        <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
           {!cameraOn ? (
             <button
               onClick={startCamera}
               disabled={cameraLoading}
               style={{
                 background: '#15803d',
-                color: '#ffffff',
+                color: '#fff',
                 border: 'none',
                 padding: '12px 22px',
                 borderRadius: '7px',
-                cursor: cameraLoading ? 'wait' : 'pointer',
-                fontWeight: 'bold',
-                opacity: cameraLoading ? 0.7 : 1
+                cursor: 'pointer',
+                fontWeight: 'bold'
               }}
             >
               {cameraLoading ? 'Starting Camera...' : '▶ Start Camera'}
@@ -301,7 +536,7 @@ function App() {
               onClick={stopCamera}
               style={{
                 background: '#dc2626',
-                color: '#ffffff',
+                color: '#fff',
                 border: 'none',
                 padding: '12px 22px',
                 borderRadius: '7px',
@@ -314,9 +549,32 @@ function App() {
           )}
         </div>
 
+        <div style={{
+          marginTop: '15px',
+          padding: '15px',
+          background: '#f0fdf4',
+          borderRadius: '8px',
+          color: '#166534'
+        }}>
+          <h3>AI Vehicle Detection</h3>
+          <p><strong>Status:</strong> {detectionStatus}</p>
+          <p><strong>Vehicles detected in latest frame:</strong> {vehicleCount}</p>
+          <p><strong>Vehicle details:</strong> {
+            detections.length
+              ? detections.map((item, index) =>
+                  `${index + 1}. ${item.vehicle} (${Math.round(item.confidence * 100)}%)`
+                ).join(', ')
+              : 'No vehicles detected yet'
+          }</p>
+
+          {detectionError && (
+            <p style={{ color: '#dc2626' }}>{detectionError}</p>
+          )}
+        </div>
+
         <p style={{ fontSize: '13px', color: '#64748b' }}>
-          Note: This camera displays live video only. AI vehicle detection
-          is not connected yet.
+          Count is for the latest camera frame, not unique vehicles.
+          Density uses the project assumption of 20 vehicles = 100%.
         </p>
       </div>
 
@@ -325,17 +583,20 @@ function App() {
 
         <div className="summary-card">
           <h3>Total Vehicles</h3>
-          <p className="summary-number">19</p>
+          <p className="summary-number">{vehicleCount}</p>
+          <small>Latest camera frame</small>
         </div>
 
         <div className="summary-card">
           <h3>Average Density</h3>
-          <p className="summary-number">45%</p>
+          <p className="summary-number">{density}%</p>
+          <small>Estimated from vehicle count</small>
         </div>
 
         <div className="summary-card">
           <h3>Active Signals</h3>
-          <p className="summary-number">2</p>
+          <p className="summary-number">{activeSignals}</p>
+          <small>Single monitored road</small>
         </div>
 
         <div className="summary-card">
@@ -345,19 +606,17 @@ function App() {
 
       </div>
 
-      {/* EMERGENCY STATUS */}
+      {/* EMERGENCY */}
       <div className={`alert-box ${emergency ? 'emergency-active' : ''}`}>
-
         <h3>🚨 Emergency Status</h3>
 
         {emergency ? (
           <>
-            <p>🚑 Emergency vehicle detected!</p>
-            <p>📍 Direction: North</p>
-            <p>⚡ Priority signal activated</p>
+            <p>🚑 Manual emergency test activated.</p>
+            <p>⚠️ Camera does not identify emergency vehicles automatically.</p>
           </>
         ) : (
-          <p>🟢 No emergency vehicle detected</p>
+          <p>🟢 No manual emergency test active</p>
         )}
 
         <button
@@ -366,27 +625,20 @@ function App() {
         >
           {emergency ? 'CLEAR EMERGENCY' : 'TEST EMERGENCY'}
         </button>
-
       </div>
 
-            {/* SYSTEM STATUS */}
+      {/* SYSTEM STATUS */}
       <div className="system-status">
         <h3>⚙️ System Status</h3>
 
         <p>
-          Backend: {backendStatus === 'Connected' ? '🟢' : '🔴'}
-          {' '}{backendStatus}
+          Backend: {backendStatus === 'Connected' ? '🟢' : '🔴'} {backendStatus}
         </p>
-
-        <p>AI Detection: Not connected</p>
+        <p>AI Detection: {cameraOn ? detectionStatus : 'Camera Off'}</p>
         <p>ESP32: Not verified</p>
-        <p>Database: Configured in backend</p>
+        <p>Database: SQLite camera traffic history</p>
 
-        {apiError && (
-          <p role="alert">
-            API Error: {apiError}
-          </p>
-        )}
+        {apiError && <p role="alert">API Error: {apiError}</p>}
       </div>
 
       {/* ANALYTICS */}
@@ -394,138 +646,98 @@ function App() {
 
         <div className="analytics-card">
           <h3>Average Waiting Time</h3>
-          <p>42 sec</p>
+          <p>{analytics?.average_waiting_time_seconds ?? 0} sec</p>
         </div>
 
         <div className="analytics-card">
-          <h3>Fuel Saved</h3>
-          <p>18.5 L</p>
+          <h3>Estimated Fuel Saved</h3>
+          <p>{analytics?.estimated_fuel_saved_litres ?? 0} L</p>
         </div>
 
         <div className="analytics-card">
-          <h3>CO₂ Reduced</h3>
-          <p>42.3 kg</p>
+          <h3>Estimated CO₂ Reduced</h3>
+          <p>{analytics?.estimated_co2_reduction_kg ?? 0} kg</p>
         </div>
 
         <div className="analytics-card">
-          <h3>Peak Traffic</h3>
-          <p>6:00 PM - 8:00 PM</p>
+          <h3>Traffic Records</h3>
+          <p>{analytics?.total_records ?? 0}</p>
         </div>
 
       </div>
 
-      {/* TRAFFIC ANALYSIS CHART */}
+      {/* LIVE TRAFFIC CHART */}
       <div className="chart-section">
-
         <h2>📈 Traffic Analysis</h2>
 
-        <ResponsiveContainer width="100%" height={350}>
-          <LineChart data={trafficHistory}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" />
-            <YAxis />
-            <Tooltip />
+        {trafficHistory.length === 0 ? (
+          <p>Start the camera to generate live traffic graph.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={350}>
+            <LineChart data={trafficHistory}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="time" />
+              <YAxis />
+              <Tooltip />
 
-            <Line
-              type="monotone"
-              dataKey="vehicles"
-              stroke="#2563eb"
-              strokeWidth={3}
-              name="Vehicles"
-            />
+              <Line
+                type="monotone"
+                dataKey="vehicles"
+                stroke="#2563eb"
+                strokeWidth={3}
+                name="Vehicles"
+              />
 
-            <Line
-              type="monotone"
-              dataKey="density"
-              stroke="#f59e0b"
-              strokeWidth={3}
-              name="Density %"
-            />
-          </LineChart>
-        </ResponsiveContainer>
-
+              <Line
+                type="monotone"
+                dataKey="density"
+                stroke="#f59e0b"
+                strokeWidth={3}
+                name="Density %"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
-      {/* TRAFFIC SIGNALS */}
+      {/* SINGLE CAMERA SIGNAL */}
       <div className="traffic-container">
-
         <div className="traffic-card">
-          <h3>North</h3>
-          <p>🚗 Vehicles: 5</p>
-          <p>📊 Density: 40%</p>
+          <h3>📷 Monitored Road</h3>
+          <p>🚗 Vehicles: {vehicleCount}</p>
+          <p>📊 Density: {density}%</p>
 
           <div className="density-bar">
-            <div className="density-fill" style={{ width: '40%' }}></div>
+            <div
+              className="density-fill"
+              style={{ width: `${density}%` }}
+            />
           </div>
 
           <div className="signal">
-            <span className={`signal-light ${northSignal.toLowerCase()}`}></span>
-            {northSignal}
+            <span className={`signal-light ${signalStatus.toLowerCase()}`} />
+            {signalStatus}
           </div>
 
-          <button onClick={() => setNorthSignal('GREEN')}>GREEN</button>
-          <button onClick={() => setNorthSignal('RED')}>RED</button>
+          <p>
+            {signalStatus === 'GREEN'
+              ? 'Traffic density is 40% or higher.'
+              : 'Traffic density is below 40%.'}
+          </p>
         </div>
 
-        <div className="traffic-card">
-          <h3>South</h3>
-          <p>🚗 Vehicles: 2</p>
-          <p>📊 Density: 20%</p>
-
-          <div className="density-bar">
-            <div className="density-fill" style={{ width: '20%' }}></div>
+        {['North', 'South', 'East', 'West'].map((direction) => (
+          <div className="traffic-card" key={direction}>
+            <h3>{direction}</h3>
+            <p>Vehicles: Not separately monitored</p>
+            <p>Density: Not available</p>
+            <p>Connect a separate camera to measure this direction.</p>
           </div>
-
-          <div className="signal">
-            <span className={`signal-light ${southSignal.toLowerCase()}`}></span>
-            {southSignal}
-          </div>
-
-          <button onClick={() => setSouthSignal('GREEN')}>GREEN</button>
-          <button onClick={() => setSouthSignal('RED')}>RED</button>
-        </div>
-
-        <div className="traffic-card">
-          <h3>East</h3>
-          <p>🚗 Vehicles: 8</p>
-          <p>📊 Density: 80%</p>
-
-          <div className="density-bar">
-            <div className="density-fill" style={{ width: '80%' }}></div>
-          </div>
-
-          <div className="signal">
-            <span className={`signal-light ${eastSignal.toLowerCase()}`}></span>
-            {eastSignal}
-          </div>
-
-          <button onClick={() => setEastSignal('GREEN')}>GREEN</button>
-          <button onClick={() => setEastSignal('RED')}>RED</button>
-        </div>
-
-        <div className="traffic-card">
-          <h3>West</h3>
-          <p>🚗 Vehicles: 4</p>
-          <p>📊 Density: 40%</p>
-
-          <div className="density-bar">
-            <div className="density-fill" style={{ width: '40%' }}></div>
-          </div>
-
-          <div className="signal">
-            <span className={`signal-light ${westSignal.toLowerCase()}`}></span>
-            {westSignal}
-          </div>
-
-          <button onClick={() => setWestSignal('GREEN')}>GREEN</button>
-          <button onClick={() => setWestSignal('RED')}>RED</button>
-        </div>
-
+        ))}
       </div>
 
       {/* TRAFFIC HISTORY */}
       <div className="history-section">
-
         <h2>📊 Traffic History</h2>
 
         <table>
@@ -534,62 +746,47 @@ function App() {
               <th>Time</th>
               <th>Total Vehicles</th>
               <th>Average Density</th>
-              <th>Average Waiting</th>
+              <th>Signal</th>
             </tr>
           </thead>
 
           <tbody>
-            <tr>
-              <td>10:00 AM</td>
-              <td>15</td>
-              <td>35%</td>
-              <td>28 sec</td>
-            </tr>
-
-            <tr>
-              <td>12:00 PM</td>
-              <td>22</td>
-              <td>52%</td>
-              <td>41 sec</td>
-            </tr>
-
-            <tr>
-              <td>02:00 PM</td>
-              <td>18</td>
-              <td>44%</td>
-              <td>36 sec</td>
-            </tr>
-
-            <tr>
-              <td>06:00 PM</td>
-              <td>31</td>
-              <td>78%</td>
-              <td>65 sec</td>
-            </tr>
+            {history.length === 0 ? (
+              <tr>
+                <td colSpan="4">No records yet. Start the camera.</td>
+              </tr>
+            ) : (
+              history.map((record) => (
+                <tr key={record.id}>
+                  <td>{formatTime(record.timestamp)}</td>
+                  <td>{record.vehicle_count}</td>
+                  <td>{record.density}%</td>
+                  <td>{record.signal_status}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
-
       </div>
 
       {/* PERFORMANCE REPORT */}
       <div className="report-section">
-
         <h2>📄 Traffic Performance Report</h2>
 
         <div className="report-buttons">
-          <button>Daily Report</button>
-          <button>Weekly Report</button>
+          <button onClick={() => window.print()}>Daily Report / Print</button>
+          <button onClick={() => window.print()}>Weekly Report / Print</button>
         </div>
 
         <div className="report-summary">
-          <p><strong>Report Period:</strong> Today</p>
-          <p><strong>Total Vehicles Managed:</strong> 1,248</p>
-          <p><strong>Average Waiting Time:</strong> 38 seconds</p>
-          <p><strong>Fuel Saved:</strong> 86.4 Litres</p>
-          <p><strong>CO₂ Reduced:</strong> 197.2 kg</p>
-          <p><strong>Emergency Events:</strong> 3</p>
+          <p><strong>Report Period:</strong> Current database records</p>
+          <p><strong>Total Vehicles Processed:</strong> {totalVehicles}</p>
+          <p><strong>Average Density:</strong> {averageDensity}%</p>
+          <p><strong>Average Waiting Time (estimated):</strong> {analytics?.average_waiting_time_seconds ?? 0} seconds</p>
+          <p><strong>Estimated Fuel Saved:</strong> {analytics?.estimated_fuel_saved_litres ?? 0} Litres</p>
+          <p><strong>Estimated CO₂ Reduced:</strong> {analytics?.estimated_co2_reduction_kg ?? 0} kg</p>
+          <p><strong>Emergency Test Events:</strong> {emergency ? 1 : 0}</p>
         </div>
-
       </div>
 
     </div>
